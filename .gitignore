@@ -22,6 +22,9 @@ env/
 pgdata/
 *.sqlite3
 
+# Corpus (regenerable via scripts/fetch_corpus.sh)
+corpus/
+
 # Editors / OS
 .vscode/
 .idea/

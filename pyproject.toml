@@ -1,0 +1,32 @@
+[project]
+name = "stage-7-retrieval-rag"
+version = "0.1.0"
+description = "Stage 7 — Retrieval-Grounded Answering with Citations"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "asyncpg>=0.30",
+    "pgvector>=0.3",
+    "pydantic-settings>=2.6",
+    "openai>=1.54",
+    "python-dotenv>=1.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.27",
+    "ruff>=0.7",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
