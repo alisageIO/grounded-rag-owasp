@@ -1,6 +1,6 @@
 # Stage 7 — Retrieval-Grounded Answering with Citations
 
-### Mini Technical Requirements Document
+## Mini Technical Requirements Document
 
 Corpus: OWASP Cheat Sheet Series (identity, access, input-handling), pinned per [`CORPUS.md`](CORPUS.md). 40 indexed docs, 7 held-out (abstention), 1 freshness-revision pair — see [`../scripts/fetch_corpus.sh`](../scripts/fetch_corpus.sh).
 
@@ -107,7 +107,7 @@ sequenceDiagram
 
 ## 5. Data model (sketch)
 
-```
+```python
 documents(id, source_path, content_hash, latest_version, ingested_at, status)
 chunks(id, document_id, version, chunk_index, content, token_count,
        embedding vector(1536), tsv tsvector, is_active bool,
@@ -150,13 +150,15 @@ flowchart LR
 
 Screens, each mapped to a graded requirement rather than decoration:
 
-| Screen | Backed by | Proves |
-| --- | --- | --- |
-| Ask panel | `GET /api/ask` | Answer + citations (`source`, `chunk_id`, `version`, `snippet`) with a visible `grounded` / `not_found` badge — abstention behavior live, not just in the eval report. |
-| Documents table | `GET /api/documents` | Source, version, `ingested_at` — the freshness metadata §7.3 requires surfaced. |
-| Freshness before/after | `GET /api/ask` against two ingest states | Same question, citation `version` visibly different pre/post update — the clickable form of the written freshness demo. |
-| Re-ingest trigger | `POST /api/ingest` | Renders change-detection counts (`new`/`changed`/`unchanged`/`removed`) back — proves incremental re-embed, not a full reindex. |
-| Eval summary | static render of the eval JSON | Precision@k/recall@k, faithfulness rate, abstention accuracy as a table — the actual grade, not just a demo. |
+| Screen | Backed by | Proves | Design |
+| --- | --- | --- | --- |
+| Ask panel | `GET /api/ask` | Answer + citations (`source`, `chunk_id`, `version`, `snippet`) with a visible `grounded` / `not_found` badge — abstention behavior live, not just in the eval report. | figma-drafted (partial) — citation-chip hover/popover behavior is documented via component annotation only, not wired as a working Figma prototype interaction |
+| Documents table | `GET /api/documents` | Source, version, `ingested_at` — the freshness metadata §7.3 requires surfaced. | figma-drafted |
+| Freshness before/after | `GET /api/ask` against two ingest states | Same question, citation `version` visibly different pre/post update — the clickable form of the written freshness demo. | figma-drafted |
+| Re-ingest trigger | `POST /api/ingest` | Renders change-detection counts (`new`/`changed`/`unchanged`/`removed`) back — proves incremental re-embed, not a full reindex. | figma-drafted |
+| Eval summary | static render of the eval JSON | Precision@k/recall@k, faithfulness rate, abstention accuracy as a table — the actual grade, not just a demo. | figma-drafted |
+
+Figma design file: [Stage 7 RAG — Minimal Client](https://www.figma.com/design/SsrpleNLBI3bljnlBT9XPx). Design plan and build log: [plans/minimal-client-figma-plan.md](../plans/minimal-client-figma-plan.md), [plans/figma-build-log.md](../plans/figma-build-log.md).
 
 ## 9. Out of scope for this stage
 
