@@ -20,6 +20,14 @@ async def truncate_tables():
     yield
 
 
+@pytest.fixture(autouse=True)
+def stub_embedder(monkeypatch):
+    async def _fake_embed(texts: list[str]) -> list[list[float]]:
+        return [[0.0] * 1536 for _ in texts]
+
+    monkeypatch.setattr("app.services.embedder.embed", _fake_embed)
+
+
 @pytest.fixture
 async def client():
     async with app.router.lifespan_context(app):

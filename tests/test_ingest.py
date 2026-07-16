@@ -2,7 +2,18 @@ import asyncpg.pool
 import pytest
 
 from app.main import app
-from app.services import change_detector
+from app.services import change_detector, chunker
+
+
+def _install_embed_spy(monkeypatch):
+    calls: list[list[str]] = []
+
+    async def _spy_embed(texts: list[str]) -> list[list[float]]:
+        calls.append(list(texts))
+        return [[0.0] * 1536 for _ in texts]
+
+    monkeypatch.setattr("app.services.embedder.embed", _spy_embed)
+    return calls
 
 
 async def _seed_document(source_path: str, content: str, latest_version: int = 1) -> None:
@@ -25,23 +36,34 @@ async def test_idempotent_reingest_is_a_noop_on_second_run(client):
     assert first.status_code == 200
     assert first.json() == {"new": 2, "changed": 0, "unchanged": 0, "removed": 0}
 
+    chunk_count_after_first = await app.state.db.fetchval("SELECT count(*) FROM chunks")
+    assert chunk_count_after_first > 0
+
     second = await client.post("/api/ingest", json=batch)
     assert second.status_code == 200
     assert second.json() == {"new": 0, "changed": 0, "unchanged": 2, "removed": 0}
 
-    chunk_count = await app.state.db.fetchval("SELECT count(*) FROM chunks")
-    assert chunk_count == 0
+    chunk_count_after_second = await app.state.db.fetchval("SELECT count(*) FROM chunks")
+    assert chunk_count_after_second == chunk_count_after_first
 
 
-async def test_ingest_never_calls_embedder(client, monkeypatch):
+async def test_unchanged_and_removed_items_never_call_embedder(client, monkeypatch):
+    await _seed_document("known.md", "known content")
+
     async def _fail_embed(texts):
-        raise AssertionError("embedder must not be called by /api/ingest")
+        raise AssertionError("embedder must not be called for unchanged/removed items")
 
     monkeypatch.setattr("app.services.embedder.embed", _fail_embed)
 
-    response = await client.post("/api/ingest", json=[{"source_path": "a.md", "content": "content a"}])
+    unchanged_response = await client.post(
+        "/api/ingest", json=[{"source_path": "known.md", "content": "known content"}]
+    )
+    assert unchanged_response.status_code == 200
+    assert unchanged_response.json()["unchanged"] == 1
 
-    assert response.status_code == 200
+    removed_response = await client.post("/api/ingest", json=[])
+    assert removed_response.status_code == 200
+    assert removed_response.json()["removed"] == 1
 
 
 async def test_response_counts_match_batch_composition(client):
@@ -88,21 +110,21 @@ async def test_interrupted_batch_commits_completed_items_only(client, monkeypatc
         "three.md": "content three",
     }
 
-    original_execute = asyncpg.pool.Pool.execute
+    original_fetchrow = asyncpg.pool.Pool.fetchrow
     calls: list[str] = []
 
-    async def _flaky_execute(self, query, *args, **kwargs):
+    async def _flaky_fetchrow(self, query, *args, **kwargs):
         calls.append(query)
         if len(calls) == 2:
             raise RuntimeError("simulated crash mid-batch")
-        return await original_execute(self, query, *args, **kwargs)
+        return await original_fetchrow(self, query, *args, **kwargs)
 
-    monkeypatch.setattr(asyncpg.pool.Pool, "execute", _flaky_execute)
+    monkeypatch.setattr(asyncpg.pool.Pool, "fetchrow", _flaky_fetchrow)
 
     with pytest.raises(RuntimeError):
         await change_detector.apply_ingest(app.state.db, batch)
 
-    monkeypatch.setattr(asyncpg.pool.Pool, "execute", original_execute)
+    monkeypatch.setattr(asyncpg.pool.Pool, "fetchrow", original_fetchrow)
 
     rows = {row["source_path"] for row in await app.state.db.fetch("SELECT source_path FROM documents")}
     assert "one.md" in rows
@@ -132,3 +154,119 @@ async def test_removed_item_reported_but_row_untouched(client):
 
     row = await app.state.db.fetchrow("SELECT status FROM documents WHERE source_path = $1", "gone.md")
     assert row["status"] == "active"
+
+
+async def test_changing_one_document_embeds_only_that_document(client, monkeypatch):
+    await _seed_document("a.md", "content a")
+    await _seed_document("b.md", "content b")
+    await _seed_document("c.md", "content c")
+
+    calls = _install_embed_spy(monkeypatch)
+
+    batch = [
+        {"source_path": "a.md", "content": "content a"},
+        {"source_path": "b.md", "content": "content b CHANGED"},
+        {"source_path": "c.md", "content": "content c"},
+    ]
+    response = await client.post("/api/ingest", json=batch)
+
+    assert response.json()["changed"] == 1
+    assert len(calls) == 1
+    assert calls[0] == ["content b CHANGED"]
+
+
+async def _run_single_change_and_assert_one_call(client, monkeypatch, corpus_size: int) -> None:
+    for i in range(corpus_size):
+        await _seed_document(f"doc{i}.md", f"content {i}")
+
+    calls = _install_embed_spy(monkeypatch)
+
+    batch = [{"source_path": f"doc{i}.md", "content": f"content {i}"} for i in range(corpus_size)]
+    batch[0]["content"] = "content 0 CHANGED"
+
+    response = await client.post("/api/ingest", json=batch)
+
+    assert response.json()["changed"] == 1
+    assert len(calls) == 1
+
+
+async def test_embedding_call_count_is_one_with_small_corpus(client, monkeypatch):
+    await _run_single_change_and_assert_one_call(client, monkeypatch, corpus_size=5)
+
+
+async def test_embedding_call_count_is_one_with_larger_corpus(client, monkeypatch):
+    await _run_single_change_and_assert_one_call(client, monkeypatch, corpus_size=20)
+
+
+async def test_new_documents_embedded_alongside_changed_document(client, monkeypatch):
+    await _seed_document("existing.md", "existing content")
+    await _seed_document("stable.md", "stable content")
+
+    calls = _install_embed_spy(monkeypatch)
+
+    batch = [
+        {"source_path": "existing.md", "content": "existing content CHANGED"},
+        {"source_path": "stable.md", "content": "stable content"},
+        {"source_path": "brand-new.md", "content": "brand new content"},
+    ]
+    response = await client.post("/api/ingest", json=batch)
+
+    assert response.json() == {"new": 1, "changed": 1, "unchanged": 1, "removed": 0}
+    assert len(calls) == 2
+
+
+async def test_all_documents_changed_simultaneously_all_reembedded(client, monkeypatch):
+    for i in range(4):
+        await _seed_document(f"doc{i}.md", f"content {i}")
+
+    calls = _install_embed_spy(monkeypatch)
+
+    batch = [{"source_path": f"doc{i}.md", "content": f"content {i} CHANGED"} for i in range(4)]
+    response = await client.post("/api/ingest", json=batch)
+
+    assert response.json()["changed"] == 4
+    assert len(calls) == 4
+
+
+async def test_larger_changed_document_only_changes_its_own_chunk_count(client):
+    initial_batch = [
+        {"source_path": "a.md", "content": "short content a"},
+        {"source_path": "b.md", "content": "short content b"},
+    ]
+    await client.post("/api/ingest", json=initial_batch)
+
+    doc_a_id = await app.state.db.fetchval("SELECT id FROM documents WHERE source_path = 'a.md'")
+    doc_b_id = await app.state.db.fetchval("SELECT id FROM documents WHERE source_path = 'b.md'")
+
+    a_chunk_count_before = await app.state.db.fetchval(
+        "SELECT count(*) FROM chunks WHERE document_id = $1", doc_a_id
+    )
+    b_chunk_ids_before = {
+        row["id"] for row in await app.state.db.fetch("SELECT id FROM chunks WHERE document_id = $1", doc_b_id)
+    }
+    assert a_chunk_count_before == 1
+
+    larger_content_a = " ".join(f"word{i}" for i in range(500))
+    update_batch = [
+        {"source_path": "a.md", "content": larger_content_a},
+        {"source_path": "b.md", "content": "short content b"},
+    ]
+    response = await client.post("/api/ingest", json=update_batch)
+    assert response.json()["changed"] == 1
+
+    # Tombstoning superseded chunks is US-004's job — the version-1 chunk row from the
+    # initial ingest is still present, so total count is old + newly inserted version-2 chunks.
+    a_chunk_count_after = await app.state.db.fetchval(
+        "SELECT count(*) FROM chunks WHERE document_id = $1", doc_a_id
+    )
+    assert a_chunk_count_after == a_chunk_count_before + len(chunker.chunk(larger_content_a))
+
+    a_new_version_chunk_count = await app.state.db.fetchval(
+        "SELECT count(*) FROM chunks WHERE document_id = $1 AND version = 2", doc_a_id
+    )
+    assert a_new_version_chunk_count == len(chunker.chunk(larger_content_a))
+
+    b_chunk_ids_after = {
+        row["id"] for row in await app.state.db.fetch("SELECT id FROM chunks WHERE document_id = $1", doc_b_id)
+    }
+    assert b_chunk_ids_after == b_chunk_ids_before
