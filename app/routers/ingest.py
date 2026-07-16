@@ -1,6 +1,9 @@
-from fastapi import APIRouter, HTTPException
-
+import asyncpg
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
+
+from app.db import get_pool
+from app.services import change_detector
 
 router = APIRouter()
 
@@ -18,5 +21,7 @@ class IngestCounts(BaseModel):
 
 
 @router.post("/api/ingest", response_model=IngestCounts)
-async def ingest(items: list[IngestItem]) -> IngestCounts:
-    raise HTTPException(status_code=501, detail="not implemented — Epic 7A")
+async def ingest(items: list[IngestItem], pool: asyncpg.Pool = Depends(get_pool)) -> IngestCounts:
+    batch = {item.source_path: item.content for item in items}
+    counts = await change_detector.apply_ingest(pool, batch)
+    return IngestCounts(**counts)
