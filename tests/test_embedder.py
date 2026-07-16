@@ -2,6 +2,10 @@ from types import SimpleNamespace
 
 from app.services import embedder
 
+# Captured at collection time, before conftest's autouse `stub_embedder` fixture
+# monkeypatches `embedder.embed` per-test — these tests exercise the real implementation.
+_real_embed = embedder.embed
+
 
 class _FakeEmbeddings:
     def __init__(self, response):
@@ -30,7 +34,7 @@ async def test_embed_calls_openai_with_texts_and_model(monkeypatch):
     fake_client = _FakeClient(_response({0: [0.1, 0.2], 1: [0.3, 0.4]}))
     monkeypatch.setattr(embedder, "_client", lambda: fake_client)
 
-    result = await embedder.embed(["a", "b"])
+    result = await _real_embed(["a", "b"])
 
     assert fake_client.embeddings.calls == [{"input": ["a", "b"], "model": "text-embedding-3-small"}]
     assert result == [[0.1, 0.2], [0.3, 0.4]]
@@ -40,6 +44,6 @@ async def test_embed_returns_vectors_in_input_order_even_if_response_is_out_of_o
     fake_client = _FakeClient(_response({1: [0.3, 0.4], 0: [0.1, 0.2]}))
     monkeypatch.setattr(embedder, "_client", lambda: fake_client)
 
-    result = await embedder.embed(["a", "b"])
+    result = await _real_embed(["a", "b"])
 
     assert result == [[0.1, 0.2], [0.3, 0.4]]
